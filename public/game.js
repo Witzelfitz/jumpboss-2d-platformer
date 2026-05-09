@@ -9,13 +9,14 @@ const submitBtn = document.getElementById('submitScore');
 const room = new URLSearchParams(location.search).get('room') || 'global';
 const socket = io({ query: { room } });
 const remotePlayers = {};
+let mySocketId = null;
 const myColor = `hsl(${Math.floor(Math.random() * 360)} 80% 60%)`;
 const particles = [];
 const keys = {};
 const gravity = 0.6;
 
 const world = { width: 3200, floorY: 470, cameraX: 0, score: 0, gameOver: false, win: false, started: false };
-const player = { x: 60, y: 300, w: 32, h: 46, vx: 0, vy: 0, speed: 4.2, jump: -13, grounded: false, hp: 3, hitCooldown: 0, jumps: 0, dashCd: 0 };
+const player = { x: 60, y: 300, w: 32, h: 46, vx: 0, vy: 0, speed: 4.2, jump: -13, grounded: false, hp: 3, hitCooldown: 0, jumps: 0, dashCd: 0, dashTime: 0, dashDir: 1 };
 const stars = Array.from({ length: 80 }, () => ({ x: Math.random() * world.width, y: Math.random() * 220, r: Math.random() * 2 + 0.5 }));
 
 const platforms = [
@@ -45,7 +46,7 @@ function reset() {
   Object.assign(world, { score: 0, gameOver: false, win: false, started: true });
   coins.forEach((c) => (c.taken = false));
   boss.hp = 12; boss.alive = true; boss.shots.length = 0;
-  statusEl.textContent = 'Go! Sammle Münzen, dodge den Boss, gewinne den Fight.';
+  statusEl.textContent = 'Los! Sammle Münzen, weiche dem Boss aus und gewinne den Fight.';
 }
 
 function hurtPlayer() {
@@ -63,7 +64,14 @@ function update() {
   if (keys.ArrowLeft || keys.a) player.vx = -player.speed;
   if (keys.ArrowRight || keys.d) player.vx = player.speed;
 
-  player.vy += gravity;
+  if (player.dashTime > 0) {
+    player.dashTime--;
+    player.vx = player.dashDir * 10;
+    player.vy *= 0.4;
+  } else {
+    player.vy += gravity;
+  }
+
   player.x += player.vx;
   player.y += player.vy;
   player.grounded = false;
@@ -79,6 +87,22 @@ function update() {
   }
 
   for (const c of coins) if (!c.taken && rects(player, { x: c.x, y: c.y, w: 18, h: 18 })) { c.taken = true; world.score += 120; burst(c.x + 9, c.y + 9, '#fde047', 10); }
+
+  for (const [id, rp] of Object.entries(remotePlayers)) {
+    if (!rp?.alive) continue;
+    const rb = { x: rp.x, y: rp.y, w: player.w, h: player.h };
+    if (rects(player, rb)) {
+      const stomp = player.vy > 1.5 && player.y + player.h - player.vy <= rb.y + 14;
+      if (stomp) {
+        socket.emit('player:stomp', { targetId: id });
+        player.vy = -8.5;
+        world.score += 180;
+        burst(rb.x + 14, rb.y + 12, '#fca5a5', 10);
+      } else {
+        hurtPlayer();
+      }
+    }
+  }
 
   for (const e of enemies) {
     e.x += e.dir * 1.6;
@@ -111,7 +135,7 @@ function update() {
   while (particles.length && particles[0].life <= 0) particles.shift();
 
   world.cameraX = clamp(player.x - 220, 0, world.width - canvas.width);
-  scoreInfo.textContent = `Room: ${room} | Score: ${world.score} | HP: ${player.hp} | Boss HP: ${boss.alive ? boss.hp : 0}`;
+  scoreInfo.textContent = `Room: ${room} | Score: ${world.score} | HP: ${player.hp} | Boss-HP: ${boss.alive ? boss.hp : 0}`;
 }
 
 function drawRect(obj, color) { ctx.fillStyle = color; ctx.fillRect(obj.x - world.cameraX, obj.y, obj.w, obj.h); }
@@ -183,11 +207,15 @@ function render() {
     const title = !world.started ? 'JUMPBOSS X' : world.win ? 'YOU WIN' : 'GAME OVER';
     ctx.fillText(title, 335, 220);
     ctx.font = '20px Arial';
-    ctx.fillText(!world.started ? 'Enter starten • Space Doppeljump • Shift Dash • R Reset' : 'R fuer Neustart', 220, 270);
+    ctx.fillText(!world.started ? 'Enter starten • Space Doppeljump • Shift Dash • R Reset' : 'R für Neustart', 220, 270);
   }
 }
 
 function loop() { update(); render(); requestAnimationFrame(loop); }
+
+socket.on('connect', () => {
+  mySocketId = socket.id;
+});
 
 socket.on('room:joined', (joined) => {
   statusEl.textContent = `Verbunden mit Room: ${joined}`;
@@ -204,9 +232,34 @@ socket.on('leaderboard:update', (scores) => {
 
 socket.on('players:update', (players) => {
   Object.keys(remotePlayers).forEach((k) => delete remotePlayers[k]);
-  Object.entries(players || {}).forEach(([id, p]) => { if (p) remotePlayers[id] = p; });
+  Object.entries(players || {}).forEach(([id, p]) => {
+    if (!p) return;
+    if (id === mySocketId) {
+      player.hp = Number(p.hp ?? player.hp);
+      if (p.alive === false) {
+        player.x = Number(p.x ?? player.x);
+        player.y = Number(p.y ?? player.y);
+      }
+      return;
+    }
+    remotePlayers[id] = p;
+  });
 });
-socket.on('player:state', (p) => { if (p?.id) remotePlayers[p.id] = p; });
+socket.on('player:state', (p) => {
+  if (!p?.id) return;
+  if (p.id === mySocketId) {
+    player.hp = Number(p.hp ?? player.hp);
+    if (p.alive === false) {
+      player.x = Number(p.x ?? player.x);
+      player.y = Number(p.y ?? player.y);
+      statusEl.textContent = 'Du wurdest ausgeschaltet – Respawn läuft...';
+    } else {
+      statusEl.textContent = 'Du bist wieder im Spiel!';
+    }
+    return;
+  }
+  remotePlayers[p.id] = p;
+});
 socket.on('player:left', (id) => delete remotePlayers[id]);
 
 submitBtn.addEventListener('click', () => {
@@ -219,6 +272,8 @@ window.addEventListener('keydown', (e) => {
   keys[e.key] = true; keys[k] = true;
   if (k === 'enter' && !world.started) reset();
   if (k === 'r') reset();
+  if ((k === 'arrowleft' || k === 'a') && player.vx !== 0) player.dashDir = -1;
+  if ((k === 'arrowright' || k === 'd') && player.vx !== 0) player.dashDir = 1;
 
   if ((k === ' ' || k === 'arrowup' || k === 'w') && world.started && !world.gameOver && !world.win) {
     if (player.grounded) { player.vy = player.jump; player.grounded = false; player.jumps = 1; }
@@ -226,9 +281,10 @@ window.addEventListener('keydown', (e) => {
   }
 
   if (k === 'shift' && player.dashCd <= 0 && world.started && !world.gameOver && !world.win) {
-    const dir = player.vx < 0 ? -1 : 1;
-    player.x += dir * 70;
-    player.dashCd = 50;
+    const dir = player.vx < 0 ? -1 : player.vx > 0 ? 1 : player.dashDir;
+    player.dashDir = dir;
+    player.dashTime = 7;
+    player.dashCd = 36;
     burst(player.x + 16, player.y + 20, '#93c5fd', 12);
   }
 });
@@ -237,7 +293,7 @@ window.addEventListener('keyup', (e) => { keys[e.key] = false; keys[e.key.toLowe
 setInterval(() => {
   socket.emit('player:update', {
     x: player.x, y: player.y, dir: player.vx < 0 ? -1 : 1,
-    name: (nameEl.value || 'Player').slice(0, 24), color: myColor, hp: player.hp
+    name: (nameEl.value || 'Player').slice(0, 24), color: myColor, hp: player.hp, alive: player.hp > 0
   });
 }, 80);
 

@@ -9,6 +9,7 @@ const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const roomPlayers = new Map();
+const SOCKET_HP_MAX = 3;
 
 function cleanRoom(value) {
   const room = String(value || 'global').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
@@ -66,16 +67,42 @@ io.on('connection', async (socket) => {
   socket.emit('players:update', Object.fromEntries(players));
 
   socket.on('player:update', (payload = {}) => {
+    const prev = players.get(socket.id);
     const safe = {
       x: Number(payload.x) || 0,
       y: Number(payload.y) || 0,
       dir: payload.dir === -1 ? -1 : 1,
       name: String(payload.name || 'Anonymous').slice(0, 24).replace(/[^a-zA-Z0-9 _-]/g, '') || 'Anonymous',
       color: String(payload.color || '#60a5fa').slice(0, 16),
-      hp: Math.max(0, Number(payload.hp) || 0)
+      hp: prev?.hp ?? SOCKET_HP_MAX,
+      alive: prev?.alive ?? true
     };
     players.set(socket.id, safe);
     socket.to(room).emit('player:state', { id: socket.id, ...safe });
+  });
+
+  socket.on('player:stomp', ({ targetId } = {}) => {
+    const attacker = players.get(socket.id);
+    const victim = players.get(String(targetId || ''));
+    if (!attacker || !victim || !victim.alive || targetId === socket.id) return;
+
+    victim.hp = Math.max(0, (victim.hp ?? SOCKET_HP_MAX) - 1);
+    if (victim.hp <= 0) {
+      victim.alive = false;
+      victim.hp = 0;
+      victim.x = 60;
+      victim.y = 300;
+      setTimeout(() => {
+        const current = players.get(String(targetId || ''));
+        if (!current) return;
+        current.hp = SOCKET_HP_MAX;
+        current.alive = true;
+        io.to(room).emit('player:state', { id: String(targetId), ...current });
+      }, 1400);
+    }
+
+    players.set(String(targetId), victim);
+    io.to(room).emit('player:state', { id: String(targetId), ...victim });
   });
 
   socket.on('score:submit', async ({ name, score }) => {
