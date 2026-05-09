@@ -8,7 +8,17 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
-const livePlayers = new Map();
+const roomPlayers = new Map();
+
+function cleanRoom(value) {
+  const room = String(value || 'global').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+  return room || 'global';
+}
+
+function getRoomMap(room) {
+  if (!roomPlayers.has(room)) roomPlayers.set(room, new Map());
+  return roomPlayers.get(room);
+}
 
 const db = new sqlite3.Database(path.join(__dirname, 'leaderboard.db'));
 db.serialize(() => {
@@ -46,8 +56,14 @@ app.get('/api/leaderboard', async (_req, res) => {
 });
 
 io.on('connection', async (socket) => {
+  const room = cleanRoom(socket.handshake.query?.room);
+  socket.data.room = room;
+  socket.join(room);
+
+  const players = getRoomMap(room);
+  socket.emit('room:joined', room);
   socket.emit('leaderboard:update', await topScores(10));
-  socket.emit('players:update', Object.fromEntries(livePlayers));
+  socket.emit('players:update', Object.fromEntries(players));
 
   socket.on('player:update', (payload = {}) => {
     const safe = {
@@ -58,8 +74,8 @@ io.on('connection', async (socket) => {
       color: String(payload.color || '#60a5fa').slice(0, 16),
       hp: Math.max(0, Number(payload.hp) || 0)
     };
-    livePlayers.set(socket.id, safe);
-    socket.broadcast.emit('player:state', { id: socket.id, ...safe });
+    players.set(socket.id, safe);
+    socket.to(room).emit('player:state', { id: socket.id, ...safe });
   });
 
   socket.on('score:submit', async ({ name, score }) => {
@@ -68,13 +84,14 @@ io.on('connection', async (socket) => {
 
     db.run('INSERT INTO scores (name, score) VALUES (?, ?)', [cleanName, cleanScore], async (err) => {
       if (err) return;
-      io.emit('leaderboard:update', await topScores(10));
+      io.to(room).emit('leaderboard:update', await topScores(10));
     });
   });
 
   socket.on('disconnect', () => {
-    livePlayers.delete(socket.id);
-    socket.broadcast.emit('player:left', socket.id);
+    players.delete(socket.id);
+    socket.to(room).emit('player:left', socket.id);
+    if (players.size === 0) roomPlayers.delete(room);
   });
 });
 
