@@ -7,6 +7,9 @@ const nameEl = document.getElementById('name');
 const submitBtn = document.getElementById('submitScore');
 const socket = io();
 
+const bgImage = new Image();
+bgImage.src = '/assets/background.jpg';
+
 const keys = {};
 const gravity = 0.6;
 
@@ -137,7 +140,12 @@ function drawRect(obj, color) {
 function render() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
-  ctx.fillStyle = '#3f6212';
+  if (bgImage.complete) {
+    const bgX = -(world.cameraX * 0.2);
+    ctx.drawImage(bgImage, bgX, 0, canvas.width + 220, canvas.height);
+  }
+
+  ctx.fillStyle = 'rgba(63,98,18,0.85)';
   ctx.fillRect(-world.cameraX, world.floorY, world.width, 100);
 
   platforms.forEach(p => drawRect(p, '#92400e'));
