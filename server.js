@@ -8,6 +8,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
+const livePlayers = new Map();
 
 const db = new sqlite3.Database(path.join(__dirname, 'leaderboard.db'));
 db.serialize(() => {
@@ -46,6 +47,20 @@ app.get('/api/leaderboard', async (_req, res) => {
 
 io.on('connection', async (socket) => {
   socket.emit('leaderboard:update', await topScores(10));
+  socket.emit('players:update', Object.fromEntries(livePlayers));
+
+  socket.on('player:update', (payload = {}) => {
+    const safe = {
+      x: Number(payload.x) || 0,
+      y: Number(payload.y) || 0,
+      dir: payload.dir === -1 ? -1 : 1,
+      name: String(payload.name || 'Anonymous').slice(0, 24).replace(/[^a-zA-Z0-9 _-]/g, '') || 'Anonymous',
+      color: String(payload.color || '#60a5fa').slice(0, 16),
+      hp: Math.max(0, Number(payload.hp) || 0)
+    };
+    livePlayers.set(socket.id, safe);
+    socket.broadcast.emit('player:state', { id: socket.id, ...safe });
+  });
 
   socket.on('score:submit', async ({ name, score }) => {
     const cleanName = String(name || 'Anonymous').slice(0, 24).replace(/[^a-zA-Z0-9 _-]/g, '') || 'Anonymous';
@@ -55,6 +70,11 @@ io.on('connection', async (socket) => {
       if (err) return;
       io.emit('leaderboard:update', await topScores(10));
     });
+  });
+
+  socket.on('disconnect', () => {
+    livePlayers.delete(socket.id);
+    socket.broadcast.emit('player:left', socket.id);
   });
 });
 

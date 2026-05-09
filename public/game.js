@@ -6,9 +6,8 @@ const leaderboardEl = document.getElementById('leaderboard');
 const nameEl = document.getElementById('name');
 const submitBtn = document.getElementById('submitScore');
 const socket = io();
-
-const bgImage = new Image();
-bgImage.src = '/assets/background.jpg';
+const remotePlayers = {};
+const myColor = `hsl(${Math.floor(Math.random()*360)} 80% 60%)`;
 
 const keys = {};
 const gravity = 0.6;
@@ -137,15 +136,72 @@ function drawRect(obj, color) {
   ctx.fillRect(obj.x - world.cameraX, obj.y, obj.w, obj.h);
 }
 
+function drawHero(x, y, w, h, color, alpha = 1, facing = 1, hp = 3, name = '') {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const sx = x - world.cameraX;
+  ctx.translate(sx + w / 2, y + h / 2);
+  ctx.scale(facing, 1);
+  ctx.translate(-(sx + w / 2), -(y + h / 2));
+
+  ctx.fillStyle = color;
+  ctx.fillRect(sx + 6, y + 10, w - 12, h - 10);
+  ctx.fillStyle = '#fde68a';
+  ctx.fillRect(sx + 8, y, w - 16, 14);
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(sx + 10, y + 4, 4, 4);
+  ctx.fillRect(sx + 18, y + 4, 4, 4);
+  ctx.fillStyle = '#1f2937';
+  ctx.fillRect(sx + 4, y + 18, 6, h - 18);
+  ctx.fillRect(sx + w - 10, y + 18, 6, h - 18);
+
+  ctx.restore();
+
+  if (name) {
+    ctx.fillStyle = 'rgba(17,24,39,0.75)';
+    ctx.fillRect(sx - 6, y - 18, Math.max(54, name.length * 7), 14);
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px Arial';
+    ctx.fillText(name, sx - 2, y - 8);
+  }
+
+  ctx.fillStyle = '#ef4444';
+  ctx.fillRect(sx, y - 6, w, 4);
+  ctx.fillStyle = '#22c55e';
+  ctx.fillRect(sx, y - 6, Math.max(0, Math.min(1, hp / 3)) * w, 4);
+}
+
+function drawEnemy(e) {
+  const sx = e.x - world.cameraX;
+  ctx.fillStyle = '#7f1d1d';
+  ctx.fillRect(sx, e.y, e.w, e.h);
+  ctx.fillStyle = '#fecaca';
+  ctx.fillRect(sx + 4, e.y + 4, e.w - 8, 8);
+}
+
+function drawBossSprite(b) {
+  const sx = b.x - world.cameraX;
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(sx, b.y, b.w, b.h);
+  ctx.fillStyle = '#334155';
+  ctx.fillRect(sx + 8, b.y + 10, b.w - 16, b.h - 20);
+  ctx.fillStyle = '#f87171';
+  ctx.fillRect(sx + 16, b.y + 22, 14, 8);
+  ctx.fillRect(sx + b.w - 30, b.y + 22, 14, 8);
+}
+
 function render() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
-  if (bgImage.complete) {
-    const bgX = -(world.cameraX * 0.2);
-    ctx.drawImage(bgImage, bgX, 0, canvas.width + 220, canvas.height);
-  }
+  const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  sky.addColorStop(0, '#38bdf8');
+  sky.addColorStop(0.55, '#7dd3fc');
+  sky.addColorStop(0.56, '#bbf7d0');
+  sky.addColorStop(1, '#166534');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  ctx.fillStyle = 'rgba(63,98,18,0.85)';
+  ctx.fillStyle = '#3f6212';
   ctx.fillRect(-world.cameraX, world.floorY, world.width, 100);
 
   platforms.forEach(p => drawRect(p, '#92400e'));
@@ -158,9 +214,14 @@ function render() {
     ctx.fill();
   }
 
-  enemies.forEach(e => drawRect(e, '#7f1d1d'));
-  if (boss.alive) drawRect(boss, '#111827');
-  drawRect(player, player.hitCooldown % 10 < 5 ? '#2563eb' : '#93c5fd');
+  enemies.forEach(drawEnemy);
+  if (boss.alive) drawBossSprite(boss);
+
+  Object.values(remotePlayers).forEach((rp) => {
+    drawHero(rp.x, rp.y, player.w, player.h, rp.color || '#60a5fa', 0.55, rp.dir || 1, rp.hp || 0, rp.name || 'Player');
+  });
+
+  drawHero(player.x, player.y, player.w, player.h, player.hitCooldown % 10 < 5 ? myColor : '#bfdbfe', 1, player.vx < 0 ? -1 : 1, player.hp, (nameEl.value || 'You').slice(0, 24));
 
   if (world.gameOver || world.win) {
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -184,6 +245,22 @@ socket.on('leaderboard:update', (scores) => {
   });
 });
 
+socket.on('players:update', (players) => {
+  Object.keys(remotePlayers).forEach((k) => delete remotePlayers[k]);
+  Object.entries(players || {}).forEach(([id, p]) => {
+    if (p) remotePlayers[id] = p;
+  });
+});
+
+socket.on('player:state', (p) => {
+  if (!p?.id) return;
+  remotePlayers[p.id] = p;
+});
+
+socket.on('player:left', (id) => {
+  delete remotePlayers[id];
+});
+
 submitBtn.addEventListener('click', () => {
   socket.emit('score:submit', { name: nameEl.value || 'Anonymous', score: world.score });
   statusEl.textContent = 'Score gesendet!';
@@ -198,5 +275,16 @@ window.addEventListener('keyup', (e) => {
   keys[e.key] = false;
   keys[e.key.toLowerCase()] = false;
 });
+
+setInterval(() => {
+  socket.emit('player:update', {
+    x: player.x,
+    y: player.y,
+    dir: player.vx < 0 ? -1 : 1,
+    name: (nameEl.value || 'Player').slice(0, 24),
+    color: myColor,
+    hp: player.hp
+  });
+}, 80);
 
 loop();
